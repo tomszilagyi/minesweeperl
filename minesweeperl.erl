@@ -1,22 +1,34 @@
 -module(minesweeperl).
 -author('Tom Szilagyi <tomszilagyi@gmail.com>').
--export([new_game/3, new_game/4]).
+-export([ new_game/3
+        , new_game/4
+        , step/2
+        , flag/2
+        , question/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
 -record(field,
-        { is_mine    = false
-        , is_covered = true
-        , is_flagged = false
-        , neighbours
-        , neighbour_mines
+        { has_mine = false  :: true | false
+        , status = covered
+                  :: covered    % field is in its initial, hidden state
+                  | flagged     % player or solver flagged field
+                  | questioned  % player marked field with '?'
+                  | uncovered   % stepped on or uncovered indirectly
+                  | exploded    % this is a mine, and player has stepped on it
+        , neighbours :: [pos_integer()] % list of field seq numbers
         }).
 
 -record(board,
-        { dims
-        , n_mines
-        , fields
+        { dims       :: {pos_integer(), pos_integer()}
+        , n_mines    :: pos_integer()
+        , n_hidden   :: pos_integer()         % countdown to 0 -> end of game
+        , fields     :: array:array(#field{}) % access fields via seq number
         }).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Exported functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 new_game(Rows, Cols, _Mines) when Rows < 2; Cols < 2 ->
     throw(badarg);
@@ -31,21 +43,100 @@ new_game(Rows, Cols, Mines, MineSeqList0) when length(MineSeqList0) < Mines ->
 new_game(Rows, Cols, Mines, MineSeqList) ->
     Dims = {Rows, Cols},
     Fields0 = array:new([{size, Rows*Cols}, {default, #field{}}]),
-    Fields1 = array:map(fun(Seq, Field) ->
-                                case lists:member(Seq, MineSeqList) of
-                                    true -> Field#field{is_mine = true};
-                                    false -> Field
-                                end
-                        end, Fields0),
-    Fields2 = array:map(fun(Seq, Field) ->
-                                Pos = seq2pos(Seq, Dims),
-                                Field#field{neighbours = neighbours(Pos, Dims)}
-                        end, Fields1),
-    Fields3 = array:map(fun(_Seq, Field) ->
-                                NMines = neighbour_mines(Field, Fields2),
-                                Field#field{neighbour_mines = NMines}
-                        end, Fields2),
-    #board{dims = Dims, n_mines = Mines, fields = Fields3}.
+    Fields = array:map(fun(Seq, Field) ->
+                               Pos = seq2pos(Seq, Dims),
+                               HasMine = lists:member(Seq, MineSeqList),
+                               Field#field{has_mine = HasMine,
+                                           neighbours = neighbours(Pos, Dims)}
+                       end, Fields0),
+    #board{dims = Dims, n_mines = Mines, n_hidden = Rows*Cols, fields = Fields}.
+
+%% step on a field, and thus expose it.
+%% - if it has a mine, you are dead and the game is over.
+%% - if it is empty, the number of surrounding mines will appear.
+%% - if there are no mines around you, this will recurse on the neighbours.
+%%
+%% return value: {Events, NewBoard} where
+%% - Events is a list of game events triggered by your move;
+%% - NewBoard is the updated board (in its eventual state).
+%%
+%% The idea is that the board display can be kept up-to-date based on
+%% the event stream alone.
+step(Pos, #board{dims = Dims} = Board) ->
+    Seq = pos2seq(Pos, Dims),
+    board_event(step, Seq, Board, []).
+
+%% toggle the flag on a covered field
+%% - if it is covered or questioned, it will become flagged.
+%% - if it is flagged, it will become covered.
+%% - if it is uncovered, nothing happens.
+flag({Px, Py}, Board) ->
+    {[], Board}.
+
+%% toggle the question mark on a covered field
+%% - if it is covered or flagged, it will become questioned.
+%% - if it is questioned, it will become covered.
+%% - if it is uncovered, nothing happens.
+question({Px, Py}, Board) ->
+    {[], Board}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Internal functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+board_event(step, Seq, #board{fields = Fields} = Board, Events) ->
+    case array:get(Seq, Fields) of
+        #field{has_mine = true, status = St} when St /= uncovered ->
+            board_event(explode, Seq, Board, Events);
+        #field{status = St} when St /= uncovered ->
+            board_event(uncover, Seq, Board, Events)
+    end;
+%% stepped on an empty field -- handle uncovering it (possibly recursive)
+board_event(uncover, Seq, #board{n_hidden = NH, fields = Fields} = Board,
+            Events) ->
+    F = array:get(Seq, Fields),
+    case F#field.status of
+        St when St == uncovered; St == exploded ->
+            {Events, Board}; % break recursion
+        _ ->
+            NbrMines = nbr(mines, F, Fields),
+            Fields1 = array:set(Seq, F#field{status=uncovered}, Fields),
+            Events1 = [{uncover, Seq, {empty, NbrMines}} | Events],
+            Board1 = Board#board{n_hidden = NH-1, fields = Fields1},
+            case NbrMines of
+                0 -> % no mines nearby -- recursively uncover neighbours:
+                    lists:foldl(fun(Nbr, {EvA,BoA}) ->
+                                        board_event(uncover, Nbr, BoA, EvA)
+                                end, {Events1, Board1}, F#field.neighbours);
+                _ -> {Events1, Board1}
+            end
+    end;
+%% stepped on a field with a mine -- handle explosion and game over
+board_event(explode, Seq, #board{fields = Fields} = Board, Events) ->
+    F = array:get(Seq, Fields),
+    Fields1 = array:set(Seq, F#field{status=exploded}, Fields),
+    Board1 = Board#board{fields = Fields1},
+    Events1 = [{exploded, Seq} | Events],
+    board_event(game_over, Seq, Board1, Events1);
+board_event(game_over, _Seq, #board{fields = Fields} = Board, Events) ->
+    %% generate uncover event for all fields still covered
+    %% {uncover, Seq, Type} where Type :: {empty, N} | mine
+    UncoverEvents =
+        array:foldl(fun(I, #field{status=St, has_mine=HasMine} = F, UEs)
+                          when St == covered; St == flagged; St == questioned ->
+                            Type = if HasMine -> mine;
+                                      true -> {empty, nbr(mines, F, Fields)}
+                                   end,
+                            [{uncover, I, Type} | UEs];
+                       (_I, #field{}, UEs) -> UEs
+                    end, Events, Fields),
+
+    %% TODO update fields' status to uncovered (not really needed
+    %% since display will be driven by event stream)
+
+    %% mark end of game with game_over event
+    Events1 = [game_over | UncoverEvents],
+    {Events1, Board#board{n_hidden = 0}}.
 
 
 generate_mines(Fields, N) when N >= Fields -> throw(badarg);
@@ -95,10 +186,19 @@ ns_1({Px, Py}, {_, _}, Dim) -> % inner square
                {Px+1, Py-1}, {Px+1, Py}, {Px+1, Py+1}], Dim).
 
 
-neighbour_mines(#field{neighbours = Nbs}, Fields) ->
+nbr_fun(mines) -> fun(#field{has_mine = true}) -> true; (_) -> false end;
+nbr_fun(covers) -> fun(#field{status = covered}) -> true; (_) -> false end;
+nbr_fun(uncovers) -> fun(#field{status = uncovered}) -> true; (_) -> false end;
+nbr_fun(flags) -> fun(#field{status = flagged}) -> true; (_) -> false end.
+
+nbr(Attr, #field{neighbours = Nbs}, Fields) ->
+    AttrFun = nbr_fun(Attr),
     NbFs = [array:get(Seq, Fields) || Seq <- Nbs],
-    lists:foldl(fun(#field{is_mine = true}, Cnt) -> Cnt+1;
-                   (#field{}, Cnt) -> Cnt
+    lists:foldl(fun(F, Cnt) ->
+                        case AttrFun(F) of
+                            true -> Cnt+1;
+                            false -> Cnt
+                        end
                 end, 0, NbFs).
 
 
@@ -115,11 +215,110 @@ newgame_test() ->
     #board{dims = {3, 4}, n_mines = 5, fields = Fields} = Board,
     F5 = array:get(5, Fields),
     F6 = array:get(6, Fields),
-    ?assertEqual(true, F5#field.is_mine),
-    ?assertEqual(false, F6#field.is_mine),
-    ?assertEqual(2, neighbour_mines(F5, Fields)),
-    ?assertEqual(5, neighbour_mines(F6, Fields)).
+    ?assertEqual(true, F5#field.has_mine),
+    ?assertEqual(false, F6#field.has_mine),
+    ?assertEqual(2, nbr(mines, F5, Fields)),
+    ?assertEqual(5, nbr(mines, F6, Fields)).
 
+step_on_empty_test() ->
+    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    {Events, #board{n_hidden = NHidden, fields=NewFields}} = step({1,2}, Board),
+    ?assertEqual(11, NHidden),
+    ?assertMatch([{uncover, 6, {empty, 5}}], Events),
+    ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
+
+step_on_mine_test() ->
+    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    {Events, #board{n_hidden = NHidden}} = step({0,2}, Board),
+    ?assertEqual(0, NHidden),
+    ?assertMatch([game_over,
+                  {uncover, 11, {empty, 1}},
+                  {uncover, 10, {empty, 3}},
+                  {uncover,  9, mine},
+                  {uncover,  8, {empty, 2}},
+                  {uncover,  7, mine},
+                  {uncover,  6, {empty, 5}},
+                  {uncover,  5, mine},
+                  {uncover,  4, {empty, 2}},
+                  {uncover,  3, mine},
+                  {uncover,  1, {empty, 2}},
+                  {uncover,  0, {empty, 1}},
+                  {exploded, 2}], Events).
+
+step_on_hole_test() ->
+    %%  *0, 1,*2,*3
+    %%   4, 5, 6, 7
+    %%  *8, 9,10,11
+    %%  12,13,14,15
+    Board = new_game(4, 4, 4, [0,2,3,8]),
+    {Events, #board{n_hidden = NHidden}} = step({2,2}, Board),
+    ?assertEqual(7, NHidden),
+    ?assertMatch([{uncover, 15, {empty, 0}},
+                  {uncover, 13, {empty, 1}},
+                  {uncover, 14, {empty, 0}},
+                  {uncover, 11, {empty, 0}},
+                  {uncover,  9, {empty, 1}},
+                  {uncover,  7, {empty, 2}},
+                  {uncover,  6, {empty, 2}},
+                  {uncover,  5, {empty, 3}},
+                  {uncover, 10, {empty, 0}}], Events).
+
+step_on_hole2_test() ->
+    %%  *0, 1,*2,*3
+    %%   4, 5, 6, 7
+    %%  *8, 9,10,11
+    %%  12,13,14,15
+    %%  16,17,18,19
+    Board = new_game(5, 4, 4, [0,2,3,8]),
+    {Events, #board{n_hidden = NHidden}} = step({2,2}, Board),
+    ?assertEqual(6, NHidden),
+    ?assertMatch([{uncover, 19, {empty, 0}},
+                  {uncover, 16, {empty, 0}},
+                  {uncover, 12, {empty, 1}},
+                  {uncover, 17, {empty, 0}},
+                  {uncover, 18, {empty, 0}},
+                  {uncover, 15, {empty, 0}},
+                  {uncover, 13, {empty, 1}},
+                  {uncover, 14, {empty, 0}},
+                  {uncover, 11, {empty, 0}},
+                  {uncover,  9, {empty, 1}},
+                  {uncover,  7, {empty, 2}},
+                  {uncover,  6, {empty, 2}},
+                  {uncover,  5, {empty, 3}},
+                  {uncover, 10, {empty, 0}}], Events).
+
+generate_mines_test() ->
+    ?assertMatch([_,_,_], generate_mines(2*2, 3)),
+    ?assertMatch([_,_,_,_,_], generate_mines(3*4, 5)),
+    ?assertMatch(badarg, catch generate_mines(3*4, 12)).
+
+seq2pos_test() ->
+    ?assertEqual({0,0}, seq2pos(0, {3,4})),
+    ?assertEqual({0,1}, seq2pos(1, {3,4})),
+    ?assertEqual({0,2}, seq2pos(2, {3,4})),
+    ?assertEqual({0,3}, seq2pos(3, {3,4})),
+    ?assertEqual({1,0}, seq2pos(4, {3,4})),
+    ?assertEqual({1,1}, seq2pos(5, {3,4})),
+    ?assertEqual({1,2}, seq2pos(6, {3,4})),
+    ?assertEqual({1,3}, seq2pos(7, {3,4})),
+    ?assertEqual({2,0}, seq2pos(8, {3,4})),
+    ?assertEqual({2,1}, seq2pos(9, {3,4})),
+    ?assertEqual({2,2}, seq2pos(10, {3,4})),
+    ?assertEqual({2,3}, seq2pos(11, {3,4})).
+
+pos2seq_test() ->
+    ?assertEqual(0, pos2seq({0,0}, {3,4})),
+    ?assertEqual(1, pos2seq({0,1}, {3,4})),
+    ?assertEqual(2, pos2seq({0,2}, {3,4})),
+    ?assertEqual(3, pos2seq({0,3}, {3,4})),
+    ?assertEqual(4, pos2seq({1,0}, {3,4})),
+    ?assertEqual(5, pos2seq({1,1}, {3,4})),
+    ?assertEqual(6, pos2seq({1,2}, {3,4})),
+    ?assertEqual(7, pos2seq({1,3}, {3,4})),
+    ?assertEqual(8, pos2seq({2,0}, {3,4})),
+    ?assertEqual(9, pos2seq({2,1}, {3,4})),
+    ?assertEqual(10, pos2seq({2,2}, {3,4})),
+    ?assertEqual(11, pos2seq({2,3}, {3,4})).
 
 neighbours_test() ->
     %% Field seq numbers:
