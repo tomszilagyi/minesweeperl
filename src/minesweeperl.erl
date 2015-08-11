@@ -4,7 +4,10 @@
         , new_game/4
         , step/2
         , flag/2
-        , question/2]).
+        , question/2
+        , seq2pos/2
+        , pos2seq/2
+        , posl2seql/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -66,6 +69,16 @@ question(Pos, #board{dims = Dims} = Board) ->
     Seq = pos2seq(Pos, Dims),
     board_event(question, Seq, Board, []).
 
+
+seq2pos(Seq, {_Rows, Cols}) ->
+    X = Seq div Cols,
+    Y = Seq rem Cols,
+    {X, Y}.
+
+pos2seq({Px, Py}, {_Rows, Cols}) -> Py + Cols * Px.
+
+posl2seql(PosList, Dim) -> [pos2seq(Pos, Dim) || Pos <- PosList].
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -91,10 +104,12 @@ board_event(question, Seq, #board{fields = Fields} = Board, Events) ->
 %% stepped on a field -- leads to an uncover or an explode on the same field
 board_event(step, Seq, #board{fields = Fields} = Board, Events) ->
     case array:get(Seq, Fields) of
-        #field{has_mine = true, status = St} when St /= uncovered ->
+        #field{has_mine = true, status = covered} ->
             board_event(explode, Seq, Board, Events);
-        #field{status = St} when St /= uncovered ->
-            board_event(uncover, Seq, Board, Events)
+        #field{status = covered} ->
+            board_event(uncover, Seq, Board, Events);
+        #field{} ->
+            {Events, Board}
     end;
 %% stepped on an empty field -- handle uncovering it (possibly recursive)
 board_event(uncover, Seq, #board{n_hidden = NH, fields = Fields} = Board,
@@ -124,12 +139,9 @@ board_event(game_over, _Seq, #board{fields = Fields} = Board, Events) ->
     %% generate uncover event for all fields still covered
     %% {uncover, Seq, Type} where Type :: {empty, N} | mine
     UncoverEvents =
-        array:foldl(fun(I, #field{status=St, has_mine=HasMine} = F, UEs)
+        array:foldl(fun(I, #field{status=St} = F, UEs)
                           when St == covered; St == flagged; St == questioned ->
-                            Type = if HasMine -> mine;
-                                      true -> {empty, nbr(mines, F, Fields)}
-                                   end,
-                            [{uncovered, I, Type} | UEs];
+                            [{uncovered, I, uncover_type(F, Fields)} | UEs];
                        (_I, #field{}, UEs) -> UEs
                     end, Events, Fields),
 
@@ -140,6 +152,9 @@ board_event(game_over, _Seq, #board{fields = Fields} = Board, Events) ->
     Events1 = [game_over | UncoverEvents],
     {Events1, Board#board{n_hidden = 0}}.
 
+uncover_type(#field{has_mine = true}, _Fields) -> mine;
+uncover_type(#field{status = flagged}, _Fields) -> mistaken;
+uncover_type(F, Fields) -> {empty, nbr(mines, F, Fields)}.
 
 update_field_status(NewStatus, Seq, #board{fields = Fields} = Board, Events) ->
     F = array:get(Seq, Fields),
@@ -150,7 +165,9 @@ update_field_status(NewStatus, Seq, #board{fields = Fields} = Board, Events) ->
 
 
 generate_mines(Fields, N) when N >= Fields -> throw(badarg);
-generate_mines(Fields, N) -> generate_mines(Fields, N, []).
+generate_mines(Fields, N) ->
+    random:seed(erlang:now()),
+    generate_mines(Fields, N, []).
 
 generate_mines(_Fields, 0, Mines) ->
     lists:sort(Mines);
@@ -160,16 +177,6 @@ generate_mines(Fields, N, Mines) ->
     if AlreadyPresent -> generate_mines(Fields, N, Mines);
         true          -> generate_mines(Fields, N-1, [Mine|Mines])
     end.
-
-
-seq2pos(Seq, {_Rows, Cols}) ->
-    X = Seq div Cols,
-    Y = Seq rem Cols,
-    {X, Y}.
-
-pos2seq({Px, Py}, {_Rows, Cols}) -> Py + Cols * Px.
-
-posl2seql(PosList, Dim) -> [pos2seq(Pos, Dim) || Pos <- PosList].
 
 
 neighbours({Px, Py}, {Rows, Cols}) ->
