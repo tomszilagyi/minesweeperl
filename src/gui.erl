@@ -53,7 +53,7 @@ do_init([Server, {Rows, Cols, Mines}]) ->
                           ?wxSYSTEM_MENU
                          }]),
 
-    Board = minesweeperl:new_game(Rows, Cols, Mines),
+    Board = board:new(Rows, Cols, Mines),
     Panel = wxPanel:new(Frame, []),
     Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
 
@@ -61,6 +61,7 @@ do_init([Server, {Rows, Cols, Mines}]) ->
     wxPanel:connect(Panel, middle_up, [{userData, dummy}]),
     wxPanel:connect(Panel, right_up, [{userData, dummy}]),
     wxPanel:connect(Panel, paint, [callback]),
+    wxPanel:connect(Panel, key_up),
 
     [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
                                              Py <- lists:seq(0, Cols-1)],
@@ -90,12 +91,41 @@ handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
               right_up  -> flag;
               middle_up -> question
           end,
-    {Events, NewBoard} = minesweeperl:Fun({Y div 16, X div 16}, Board),
+    {Events, NewBoard} = board:Fun({Y div 16, X div 16}, Board),
+    #board{n_hidden = NHidden} = NewBoard,
+    io:format("N hidden: ~p~n", [NHidden]),
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
     wxPanel:refresh(Frame),
-    {noreply, State#state{board=NewBoard}}.
+    {noreply, State#state{board=NewBoard}};
+handle_event(#wx{event=#wxKey{keyCode=$F}}, State) ->
+    solver_event(flag_apparent_mines, State);
+handle_event(#wx{event=#wxKey{keyCode=$S}}, State) ->
+    solver_event(uncover_safe_areas, State);
+handle_event(#wx{event=#wxKey{keyCode=$R}}, State) ->
+    solver_event(uncover_unsafe, State);
+handle_event(#wx{event=#wxKey{keyCode=KC}}, State) ->
+    io:format("keyCode ~p\n", [KC]),
+    {noreply, State}.
 
 %% Callbacks handled as normal gen_server callbacks
+handle_info(flag, #state{frame=Frame, board=Board}=State) ->
+    {Events, NewBoard} = solver:flag_apparent_mines(Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    wxPanel:refresh(Frame),
+    io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{board=NewBoard}};
+handle_info(safe, #state{frame=Frame, board=Board}=State) ->
+    {Events, NewBoard} = solver:uncover_safe_areas(Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    wxPanel:refresh(Frame),
+    io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{board=NewBoard}};
+handle_info(risk, #state{frame=Frame, board=Board}=State) ->
+    {Events, NewBoard} = solver:uncover_unsafe(Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    wxPanel:refresh(Frame),
+    io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{board=NewBoard}};
 handle_info(Msg, State) ->
     io:format("Got Info ~p\n", [Msg]),
     {noreply, State}.
@@ -122,6 +152,13 @@ terminate(_Reason, _State) ->
 %% Local functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+solver_event(Fun, #state{frame=Frame, board=Board}=State) ->
+    {Events, NewBoard} = solver:Fun(Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    wxPanel:refresh(Frame),
+    io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{board=NewBoard}}.
+
 icon_filename({empty, 0}) -> "0.gif";
 icon_filename({empty, 1}) -> "1.gif";
 icon_filename({empty, 2}) -> "2.gif";
@@ -138,12 +175,14 @@ icon_filename(mine)       -> "mine.gif";
 icon_filename(exploded)   -> "mineexpl.gif";
 icon_filename(mistaken)   -> "error.gif".
 
+draw_event({game_over, Result}, #state{}) ->
+    io:format("Game over: you ~p~n", [Result]);
 draw_event({Event, Seq}, #state{board=#board{dims=Dims},
                                 bitmap=Bitmap}) ->
-    draw_icon(Bitmap, Event, minesweeperl:seq2pos(Seq, Dims));
+    draw_icon(Bitmap, Event, board:seq2pos(Seq, Dims));
 draw_event({uncovered, Seq, Type}, #state{board=#board{dims=Dims},
                                           bitmap=Bitmap}) ->
-    draw_icon(Bitmap, Type, minesweeperl:seq2pos(Seq, Dims));
+    draw_icon(Bitmap, Type, board:seq2pos(Seq, Dims));
 draw_event(Event, _Panel) ->
     io:format("Event: ~p~n", [Event]).
 

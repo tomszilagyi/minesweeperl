@@ -1,13 +1,19 @@
--module(minesweeperl).
+-module(board).
 -author('Tom Szilagyi <tomszilagyi@gmail.com>').
--export([ new_game/3
-        , new_game/4
+-export([ new/3
+        , new/4
         , step/2
+        , step/3
         , flag/2
+        , flag/3
         , question/2
+        , question/3
         , seq2pos/2
         , pos2seq/2
-        , posl2seql/2]).
+        , posl2seql/2
+        , nbr_covers/2
+        , nbr_flags/2
+        , nbr_mines/2]).
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -17,17 +23,17 @@
 %% Exported functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-new_game(Rows, Cols, _Mines) when Rows < 2; Cols < 2 ->
+new(Rows, Cols, _Mines) when Rows < 2; Cols < 2 ->
     throw(badarg);
-new_game(Rows, Cols, Mines) ->
+new(Rows, Cols, Mines) ->
     MineSeqList = generate_mines(Rows*Cols, Mines),
-    new_game(Rows, Cols, Mines, MineSeqList).
+    new(Rows, Cols, Mines, MineSeqList).
 
 %% partially or fully specified list of mines:
-new_game(Rows, Cols, Mines, MineSeqList0) when length(MineSeqList0) < Mines ->
+new(Rows, Cols, Mines, MineSeqList0) when length(MineSeqList0) < Mines ->
     MineSeqList = generate_mines(Rows*Cols, Mines, MineSeqList0),
-    new_game(Rows, Cols, Mines, MineSeqList);
-new_game(Rows, Cols, Mines, MineSeqList) ->
+    new(Rows, Cols, Mines, MineSeqList);
+new(Rows, Cols, Mines, MineSeqList) ->
     Dims = {Rows, Cols},
     Fields0 = array:new([{size, Rows*Cols}, {default, #field{}}]),
     Fields = array:map(fun(Seq, Field) ->
@@ -49,25 +55,34 @@ new_game(Rows, Cols, Mines, MineSeqList) ->
 %%
 %% The idea is that the board display can be kept up-to-date based on
 %% the event stream alone.
-step(Pos, #board{dims = Dims} = Board) ->
-    Seq = pos2seq(Pos, Dims),
-    board_event(step, Seq, Board, []).
+step(P, Board) -> step(P, Board, []).
+
+step({_Px, _Py} = Pos, #board{dims = Dims} = Board, Events) ->
+    step(pos2seq(Pos, Dims), Board, Events);
+step(Seq, Board, Events) ->
+    board_event(step, Seq, Board, Events).
 
 %% toggle the flag on a covered field
 %% - if it is covered or questioned, it will become flagged.
 %% - if it is flagged, it will become covered.
 %% - if it is uncovered, nothing happens.
-flag(Pos, #board{dims = Dims} = Board) ->
-    Seq = pos2seq(Pos, Dims),
-    board_event(flag, Seq, Board, []).
+flag(P, Board) -> flag(P, Board, []).
+
+flag({_Px, _Py} = Pos, #board{dims = Dims} = Board, Events) ->
+    flag(pos2seq(Pos, Dims), Board, Events);
+flag(Seq, Board, Events) ->
+    board_event(flag, Seq, Board, Events).
 
 %% toggle the question mark on a covered field
 %% - if it is covered or flagged, it will become questioned.
 %% - if it is questioned, it will become covered.
 %% - if it is uncovered, nothing happens.
-question(Pos, #board{dims = Dims} = Board) ->
-    Seq = pos2seq(Pos, Dims),
-    board_event(question, Seq, Board, []).
+question(P, Board) -> question(P, Board, []).
+
+question({_Px, _Py} = Pos, #board{dims = Dims} = Board, Events) ->
+    question(pos2seq(Pos, Dims), Board, Events);
+question(Seq, Board, Events) ->
+    board_event(question, Seq, Board, Events).
 
 
 seq2pos(Seq, {_Rows, Cols}) ->
@@ -78,6 +93,12 @@ seq2pos(Seq, {_Rows, Cols}) ->
 pos2seq({Px, Py}, {_Rows, Cols}) -> Py + Cols * Px.
 
 posl2seql(PosList, Dim) -> [pos2seq(Pos, Dim) || Pos <- PosList].
+
+nbr_covers(F, Fields) -> nbr(covers, F, Fields).
+
+nbr_flags(F, Fields) -> nbr(flags, F, Fields).
+
+nbr_mines(F, Fields) -> nbr(mines, F, Fields).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Internal functions
@@ -123,19 +144,21 @@ board_event(uncover, Seq, #board{n_hidden = NH, fields = Fields} = Board,
             Fields1 = array:set(Seq, F#field{status=uncovered}, Fields),
             Events1 = [{uncovered, Seq, {empty, NbrMines}} | Events],
             Board1 = Board#board{n_hidden = NH-1, fields = Fields1},
-            case NbrMines of
-                0 -> % no mines nearby -- recursively uncover neighbours:
-                    lists:foldl(fun(Nbr, {EvA,BoA}) ->
-                                        board_event(uncover, Nbr, BoA, EvA)
-                                end, {Events1, Board1}, F#field.neighbours);
-                _ -> {Events1, Board1}
-            end
+            {Events2, Board2} =
+                case NbrMines of
+                    0 -> % no mines nearby -- recursively uncover neighbours:
+                        lists:foldl(fun(Nbr, {EvA,BoA}) ->
+                                            board_event(uncover, Nbr, BoA, EvA)
+                                    end, {Events1, Board1}, F#field.neighbours);
+                    _ -> {Events1, Board1}
+                end,
+            maybe_win(Events2, Board2)
     end;
 %% stepped on a field with a mine -- handle explosion and game over
 board_event(explode, Seq, Board, Events) ->
     {Events1, Board1} = update_field_status(exploded, Seq, Board, Events),
-    board_event(game_over, Seq, Board1, Events1);
-board_event(game_over, _Seq, #board{fields = Fields} = Board, Events) ->
+    board_event({game_over, lose}, Seq, Board1, Events1);
+board_event({game_over, lose}, _Seq, #board{fields = Fields} = Board, Events) ->
     %% generate uncover event for all fields still covered
     %% {uncover, Seq, Type} where Type :: {empty, N} | mine
     UncoverEvents =
@@ -148,9 +171,17 @@ board_event(game_over, _Seq, #board{fields = Fields} = Board, Events) ->
     %% TODO update fields' status to uncovered (not really needed
     %% since display will be driven by event stream)
 
-    %% mark end of game with game_over event
-    Events1 = [game_over | UncoverEvents],
+    %% mark end of game
+    Events1 = [{game_over, lose} | UncoverEvents],
     {Events1, Board#board{n_hidden = 0}}.
+
+%% Insert game over event in case only mines remain under cover
+maybe_win([{game_over, _} | _] = Events, Board) ->
+    {Events, Board};
+maybe_win(Events, #board{n_mines=N, n_hidden=N}=Board) ->
+    {[{game_over, win} | Events], Board};
+maybe_win(Events, Board) ->
+    {Events, Board}.
 
 uncover_type(#field{has_mine = true}, _Fields) -> mine;
 uncover_type(#field{status = flagged}, _Fields) -> mistaken;
@@ -228,7 +259,7 @@ newgame_test() ->
     %%   0, 1,*2,*3
     %%   4,*5, 6,*7
     %%   8,*9,10,11
-    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board = new(3, 4, 5, [2,3,5,7,9]),
     #board{dims = {3, 4}, n_mines = 5, fields = Fields} = Board,
     F5 = array:get(5, Fields),
     F6 = array:get(6, Fields),
@@ -238,7 +269,7 @@ newgame_test() ->
     ?assertEqual(5, nbr(mines, F6, Fields)).
 
 flag_covered_test() ->
-    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board = new(3, 4, 5, [2,3,5,7,9]),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         flag({1,2}, Board),
     ?assertEqual(12, NHidden),
@@ -246,7 +277,7 @@ flag_covered_test() ->
     ?assertMatch(#field{status=flagged}, array:get(6, NewFields)).
 
 flag_questioned_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = question({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         flag({1,2}, Board1),
@@ -255,7 +286,7 @@ flag_questioned_test() ->
     ?assertMatch(#field{status=flagged}, array:get(6, NewFields)).
 
 flag_flagged_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = flag({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         flag({1,2}, Board1),
@@ -264,7 +295,7 @@ flag_flagged_test() ->
     ?assertMatch(#field{status=covered}, array:get(6, NewFields)).
 
 flag_uncovered_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = step({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         flag({1,2}, Board1),
@@ -273,7 +304,7 @@ flag_uncovered_test() ->
     ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
 
 question_covered_test() ->
-    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board = new(3, 4, 5, [2,3,5,7,9]),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         question({1,2}, Board),
     ?assertEqual(12, NHidden),
@@ -281,7 +312,7 @@ question_covered_test() ->
     ?assertMatch(#field{status=questioned}, array:get(6, NewFields)).
 
 question_flagged_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = flag({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         question({1,2}, Board1),
@@ -290,7 +321,7 @@ question_flagged_test() ->
     ?assertMatch(#field{status=questioned}, array:get(6, NewFields)).
 
 question_questioned_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = question({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         question({1,2}, Board1),
@@ -299,7 +330,7 @@ question_questioned_test() ->
     ?assertMatch(#field{status=covered}, array:get(6, NewFields)).
 
 question_uncovered_test() ->
-    Board0 = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board0 = new(3, 4, 5, [2,3,5,7,9]),
     {_, Board1} = step({1,2}, Board0),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} =
         question({1,2}, Board1),
@@ -308,17 +339,17 @@ question_uncovered_test() ->
     ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
 
 step_on_empty_test() ->
-    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board = new(3, 4, 5, [2,3,5,7,9]),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} = step({1,2}, Board),
     ?assertEqual(11, NHidden),
     ?assertMatch([{uncovered, 6, {empty, 5}}], Events),
     ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
 
 step_on_mine_test() ->
-    Board = new_game(3, 4, 5, [2,3,5,7,9]),
+    Board = new(3, 4, 5, [2,3,5,7,9]),
     {Events, #board{n_hidden = NHidden}} = step({0,2}, Board),
     ?assertEqual(0, NHidden),
-    ?assertMatch([game_over,
+    ?assertMatch([{game_over, lose},
                   {uncovered, 11, {empty, 1}},
                   {uncovered, 10, {empty, 3}},
                   {uncovered,  9, mine},
@@ -337,7 +368,7 @@ step_on_hole_test() ->
     %%   4, 5, 6, 7
     %%  *8, 9,10,11
     %%  12,13,14,15
-    Board = new_game(4, 4, 4, [0,2,3,8]),
+    Board = new(4, 4, 4, [0,2,3,8]),
     {Events, #board{n_hidden = NHidden}} = step({2,2}, Board),
     ?assertEqual(7, NHidden),
     ?assertMatch([{uncovered, 15, {empty, 0}},
@@ -356,7 +387,7 @@ step_on_hole2_test() ->
     %%  *8, 9,10,11
     %%  12,13,14,15
     %%  16,17,18,19
-    Board = new_game(5, 4, 4, [0,2,3,8]),
+    Board = new(5, 4, 4, [0,2,3,8]),
     {Events, #board{n_hidden = NHidden}} = step({2,2}, Board),
     ?assertEqual(6, NHidden),
     ?assertMatch([{uncovered, 19, {empty, 0}},
