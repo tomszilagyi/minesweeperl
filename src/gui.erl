@@ -38,7 +38,7 @@ stop(Pid) ->
 init(Config) ->
     wx:batch(fun() -> do_init(Config) end).
 
-do_init([Server, {Rows, Cols, Mines}]) ->
+do_init([Server, {Rows, Cols, Mines}=Config]) ->
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl",
                         [{style,
                           ?wxCAPTION bor
@@ -53,7 +53,6 @@ do_init([Server, {Rows, Cols, Mines}]) ->
                           ?wxSYSTEM_MENU
                          }]),
 
-    Board = board:new(Rows, Cols, Mines),
     Panel = wxPanel:new(Frame, []),
     Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
 
@@ -63,11 +62,14 @@ do_init([Server, {Rows, Cols, Mines}]) ->
     wxPanel:connect(Panel, paint, [callback]),
     wxPanel:connect(Panel, key_up),
 
+    Board = board:new(Rows, Cols, Mines),
     [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
                                              Py <- lists:seq(0, Cols-1)],
 
+    wxFrame:centerOnScreen(Frame),
     wxFrame:show(Frame),
-    {Frame, #state{frame=Frame, panel=Panel, bitmap=Bitmap, board=Board}}.
+    {Frame, #state{frame=Frame, panel=Panel, config=Config,
+                   bitmap=Bitmap, board=Board}}.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Sync event from callback events, paint event must be handled in callbacks
@@ -92,8 +94,6 @@ handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
               middle_up -> question
           end,
     {Events, NewBoard} = board:Fun({Y div 16, X div 16}, Board),
-    #board{n_hidden = NHidden} = NewBoard,
-    io:format("N hidden: ~p~n", [NHidden]),
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
     wxPanel:refresh(Frame),
     {noreply, State#state{board=NewBoard}};
@@ -103,29 +103,18 @@ handle_event(#wx{event=#wxKey{keyCode=$S}}, State) ->
     solver_event(uncover_safe_areas, State);
 handle_event(#wx{event=#wxKey{keyCode=$R}}, State) ->
     solver_event(uncover_unsafe, State);
-handle_event(#wx{event=#wxKey{keyCode=KC}}, State) ->
-    io:format("keyCode ~p\n", [KC]),
+handle_event(#wx{event=#wxKey{keyCode=$N}},
+             #state{frame=Frame, bitmap=Bitmap,
+                    config={Rows, Cols, Mines}}=State) ->
+    Board = board:new(Rows, Cols, Mines),
+    [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
+                                             Py <- lists:seq(0, Cols-1)],
+    wxPanel:refresh(Frame),
+    {noreply, State#state{board=Board}};
+handle_event(#wx{event=#wxKey{keyCode=_KC}}, State) ->
     {noreply, State}.
 
 %% Callbacks handled as normal gen_server callbacks
-handle_info(flag, #state{frame=Frame, board=Board}=State) ->
-    {Events, NewBoard} = solver:flag_apparent_mines(Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
-    io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{board=NewBoard}};
-handle_info(safe, #state{frame=Frame, board=Board}=State) ->
-    {Events, NewBoard} = solver:uncover_safe_areas(Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
-    io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{board=NewBoard}};
-handle_info(risk, #state{frame=Frame, board=Board}=State) ->
-    {Events, NewBoard} = solver:uncover_unsafe(Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
-    io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{board=NewBoard}};
 handle_info(Msg, State) ->
     io:format("Got Info ~p\n", [Msg]),
     {noreply, State}.
@@ -135,7 +124,7 @@ handle_call(shutdown, _From, State=#state{frame=Frame}) ->
     {stop, normal, ok, State};
 
 handle_call(Msg, _From, State) ->
-    io:format(State#state.config, "Got Call ~p\n", [Msg]),
+    io:format("Got Call ~p\n", [Msg]),
     {reply,{error, nyi}, State}.
 
 handle_cast(Msg, State) ->
