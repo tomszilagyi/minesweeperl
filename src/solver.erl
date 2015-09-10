@@ -1,9 +1,9 @@
 -module(solver).
 -author('Tom Szilagyi <tomszilagyi@gmail.com>').
--export([ flag_apparent_mines/1
+-export([ step/2
+        , flag_apparent_mines/1
         , uncover_safe_areas/1
         , uncover_unsafe/1
-        , random_uncovered/1
         ]).
 
 -include_lib("eunit/include/eunit.hrl").
@@ -13,6 +13,32 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Exported functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%% Steps the solver by taking appropriate action on the board.
+%% The current solver state input to this function can be flag | safe | unsafe.
+%%
+%% Returns {NewState, Events, NewBoard} where NewState can be one of
+%% the above or 'newgame' in case the game has ended as a result of
+%% the move done. In this case a new board must be set up, which can
+%% be solved again, starting out with initial state 'flag'.
+step(flag, Board) ->
+    %% Can we flag some fields?
+    case flag_apparent_mines(Board) of
+        {[], Board} -> % nope
+            step(unsafe, Board);
+        {Events, NewBoard} ->
+            {safe, Events, NewBoard}
+    end;
+step(safe, Board) ->
+    case uncover_safe_areas(Board) of
+        {[], Board} -> % we need to go unsafe
+            step(unsafe, Board);
+        {Events, NewBoard} ->
+            maybe_newgame({flag, Events, NewBoard})
+    end;
+step(unsafe, Board) ->
+    {Events, NewBoard} = uncover_unsafe(Board),
+    maybe_newgame({flag, Events, NewBoard}).
 
 %% Mines in an uncovered state, for which the number of covered
 %% borders (flagged or not) is equal to the number of neighbour
@@ -34,6 +60,9 @@ flag_apparent_mines(Board) ->
 %% This step should be done repeatedly until no more fields can be
 %% uncovered.
 uncover_safe_areas(Board) ->
+    uncover_safe_areas([], Board).
+
+uncover_safe_areas(Events, Board) ->
     CondFun =
         fun(NCovers, NFlags, NMines) ->
                 if NFlags == NMines, NMines > 0, NCovers > 0 -> true;
@@ -41,7 +70,12 @@ uncover_safe_areas(Board) ->
                 end
         end,
     Seqs = solver_prepare(CondFun, Board),
-    solver_action(step, Seqs, Board).
+    case solver_action(step, Seqs, Board) of
+        {[], Board} ->
+            {Events, Board};
+        {NewEvents, NewBoard} ->
+            uncover_safe_areas(NewEvents ++ Events, NewBoard)
+    end.
 
 %% Dangerous step that potentially leads to losing the game.
 %% Should be done only when the above two methods do not yield moves.
@@ -49,18 +83,23 @@ uncover_unsafe(Board) ->
     Seq = random_uncovered(Board),
     solver_action(step, [Seq], Board).
 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Internal functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+maybe_newgame({_State, [{game_over, _} | _] = Events, Board}) ->
+    {newgame, Events, Board};
+maybe_newgame(ReturnTuple) -> ReturnTuple.
+
+%% Choose a random covered field to uncover. Desperate and dangerous.
 random_uncovered(#board{dims=Dims, fields=Fields} = Board) ->
     {Rows, Cols} = Dims,
     NFields = Rows * Cols,
-    Seq = random:uniform(NFields),
+    Seq = random:uniform(NFields) - 1,
     #field{status=St} = array:get(Seq, Fields),
     if St =:= covered orelse St =:= questioned -> Seq;
        true -> random_uncovered(Board)
     end.
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-%% Internal functions
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% Solver function to iterate over all the uncovered fields and collect
 %% all their neighbours fulfilling certain conditions to perform action on.

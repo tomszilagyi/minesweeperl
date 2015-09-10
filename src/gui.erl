@@ -22,6 +22,7 @@
         , bitmap
         , config
         , board
+        , solver_state = flag
         }).
 
 start_link(Rows, Cols, Mines) ->
@@ -97,20 +98,24 @@ handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
     wxPanel:refresh(Frame),
     {noreply, State#state{board=NewBoard}};
+handle_event(#wx{event=#wxKey{keyCode=$ }},
+             #state{solver_state=newgame}=State) ->
+    newgame(State);
+handle_event(#wx{event=#wxKey{keyCode=$ }},
+             #state{solver_state=SState, board=Board, frame=Frame}=State) ->
+    {NewSState, Events, NewBoard} = solver:step(SState, Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    wxPanel:refresh(Frame),
+    %io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{solver_state=NewSState, board=NewBoard}};
 handle_event(#wx{event=#wxKey{keyCode=$F}}, State) ->
     solver_event(flag_apparent_mines, State);
 handle_event(#wx{event=#wxKey{keyCode=$S}}, State) ->
     solver_event(uncover_safe_areas, State);
 handle_event(#wx{event=#wxKey{keyCode=$R}}, State) ->
     solver_event(uncover_unsafe, State);
-handle_event(#wx{event=#wxKey{keyCode=$N}},
-             #state{frame=Frame, bitmap=Bitmap,
-                    config={Rows, Cols, Mines}}=State) ->
-    Board = board:new(Rows, Cols, Mines),
-    [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
-                                             Py <- lists:seq(0, Cols-1)],
-    wxPanel:refresh(Frame),
-    {noreply, State#state{board=Board}};
+handle_event(#wx{event=#wxKey{keyCode=$N}}, State) ->
+    newgame(State);
 handle_event(#wx{event=#wxKey{keyCode=_KC}}, State) ->
     {noreply, State}.
 
@@ -141,11 +146,19 @@ terminate(_Reason, _State) ->
 %% Local functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+newgame(#state{frame=Frame, bitmap=Bitmap,
+               config={Rows, Cols, Mines}} = State) ->
+    Board = board:new(Rows, Cols, Mines),
+    [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
+                                             Py <- lists:seq(0, Cols-1)],
+    wxPanel:refresh(Frame),
+    {noreply, State#state{board=Board, solver_state=flag}}.
+
 solver_event(Fun, #state{frame=Frame, board=Board}=State) ->
     {Events, NewBoard} = solver:Fun(Board),
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
     wxPanel:refresh(Frame),
-    io:format("Events: ~p~n", [Events]),
+    %io:format("Events: ~p~n", [Events]),
     {noreply, State#state{board=NewBoard}}.
 
 icon_filename({empty, 0}) -> "0.gif";
