@@ -3,7 +3,8 @@
 -behaviour(wx_object).
 
 %% Client API
--export([ start_link/3
+-export([ screensaver/0
+        , start_link/3
         , stop/1
         ]).
 
@@ -16,14 +17,22 @@
 
 -include("../include/minesweeperl.hrl").
 
+-define(MOVE_INTERVAL, 1000).
+
 -record(state,
         { frame
         , panel
+        , mode = interactive
         , bitmap
         , config
         , board
         , solver_state = flag
         }).
+
+screensaver() ->
+    Server = wx:new(),
+    {_, _, _, Pid} = wx_object:start_link(?MODULE, [Server, screensaver], []),
+    {ok, Pid}.
 
 start_link(Rows, Cols, Mines) ->
     Server = wx:new(),
@@ -39,7 +48,22 @@ stop(Pid) ->
 init(Config) ->
     wx:batch(fun() -> do_init(Config) end).
 
-do_init([Server, {Rows, Cols, Mines}=Config]) ->
+do_init([Server, screensaver]) ->
+    DC = wxScreenDC:new(),
+    {ScreenX, ScreenY} = wxDC:getSize(DC),
+    wxScreenDC:destroy(DC),
+    Rows = ScreenY div 16,
+    Cols = ScreenX div 16,
+    Mines = Rows * Cols div 8,
+    Config = {Rows, Cols, Mines},
+    io:format("config: ~p~n", [Config]),
+    Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
+    Board = create_and_draw_board(Config, Bitmap),
+    Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl", []),
+    timer:send_interval(?MOVE_INTERVAL, move),
+    {Frame, #state{frame=Frame, config=Config,
+                   bitmap=Bitmap, board=Board, mode=screensaver}};
+do_init([Server, {Rows, Cols, _Mines}=Config]) ->
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl",
                         [{style,
                           ?wxCAPTION bor
@@ -56,16 +80,13 @@ do_init([Server, {Rows, Cols, Mines}=Config]) ->
 
     Panel = wxPanel:new(Frame, []),
     Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
+    Board = create_and_draw_board(Config, Bitmap),
 
     wxPanel:connect(Panel, left_up, [{userData, dummy}]),
     wxPanel:connect(Panel, middle_up, [{userData, dummy}]),
     wxPanel:connect(Panel, right_up, [{userData, dummy}]),
     wxPanel:connect(Panel, paint, [callback]),
     wxPanel:connect(Panel, key_up),
-
-    Board = board:new(Rows, Cols, Mines),
-    [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
-                                             Py <- lists:seq(0, Cols-1)],
 
     wxFrame:centerOnScreen(Frame),
     wxFrame:show(Frame),
@@ -88,7 +109,7 @@ handle_event(#wx{event = #wxMouse{x = X, y = Y}},
   when X < 0; Y < 0; Rows < Y div 16; Cols < X div 16 ->
     {noreply, State};
 handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
-             #state{frame=Frame, board=Board}=State) ->
+             #state{board=Board}=State) ->
     Fun = case MouseEventType of
               left_up   -> step;
               right_up  -> flag;
@@ -96,18 +117,10 @@ handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
           end,
     {Events, NewBoard} = board:Fun({Y div 16, X div 16}, Board),
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
+    refresh(State),
     {noreply, State#state{board=NewBoard}};
-handle_event(#wx{event=#wxKey{keyCode=$ }},
-             #state{solver_state=newgame}=State) ->
-    newgame(State);
-handle_event(#wx{event=#wxKey{keyCode=$ }},
-             #state{solver_state=SState, board=Board, frame=Frame}=State) ->
-    {NewSState, Events, NewBoard} = solver:step(SState, Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
-    %io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{solver_state=NewSState, board=NewBoard}};
+handle_event(#wx{event=#wxKey{keyCode=$ }}, State) ->
+    do_move(State);
 handle_event(#wx{event=#wxKey{keyCode=$F}}, State) ->
     solver_event(flag_apparent_mines, State);
 handle_event(#wx{event=#wxKey{keyCode=$S}}, State) ->
@@ -120,6 +133,8 @@ handle_event(#wx{event=#wxKey{keyCode=_KC}}, State) ->
     {noreply, State}.
 
 %% Callbacks handled as normal gen_server callbacks
+handle_info(move, State) ->
+    do_move(State);
 handle_info(Msg, State) ->
     io:format("Got Info ~p\n", [Msg]),
     {noreply, State}.
@@ -146,18 +161,30 @@ terminate(_Reason, _State) ->
 %% Local functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-newgame(#state{frame=Frame, bitmap=Bitmap,
-               config={Rows, Cols, Mines}} = State) ->
+do_move(#state{solver_state=newgame}=State) ->
+    newgame(State);
+do_move(#state{solver_state=SState, board=Board}=State) ->
+    {NewSState, Events, NewBoard} = solver:step(SState, Board),
+    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    refresh(State),
+    %io:format("Events: ~p~n", [Events]),
+    {noreply, State#state{solver_state=NewSState, board=NewBoard}}.
+
+create_and_draw_board({Rows, Cols, Mines}, Bitmap) ->
     Board = board:new(Rows, Cols, Mines),
     [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
                                              Py <- lists:seq(0, Cols-1)],
-    wxPanel:refresh(Frame),
+    Board.
+
+newgame(#state{bitmap=Bitmap, config=Config} = State) ->
+    Board = create_and_draw_board(Config, Bitmap),
+    refresh(State),
     {noreply, State#state{board=Board, solver_state=flag}}.
 
-solver_event(Fun, #state{frame=Frame, board=Board}=State) ->
+solver_event(Fun, #state{board=Board}=State) ->
     {Events, NewBoard} = solver:Fun(Board),
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    wxPanel:refresh(Frame),
+    refresh(State),
     %io:format("Events: ~p~n", [Events]),
     {noreply, State#state{board=NewBoard}}.
 
@@ -205,3 +232,10 @@ redraw(DC, Bitmap) ->
               {wxBitmap:getWidth(Bitmap), wxBitmap:getHeight(Bitmap)},
               MemoryDC, {0,0}),
     wxMemoryDC:destroy(MemoryDC).
+
+refresh(#state{mode=screensaver, bitmap=Bitmap}) ->
+    DC = wxScreenDC:new(),
+    redraw(DC, Bitmap),
+    wxScreenDC:destroy(DC);
+refresh(#state{mode=interactive, frame=Frame}) ->
+    wxPanel:refresh(Frame).
