@@ -59,10 +59,11 @@ do_init([Server, screensaver]) ->
     io:format("config: ~p~n", [Config]),
     Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
     Board = create_and_draw_board(Config, Bitmap),
+    State = #state{config=Config, bitmap=Bitmap, board=Board, mode=screensaver},
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl", []),
+    refresh(State),
     timer:send_interval(?MOVE_INTERVAL, move),
-    {Frame, #state{frame=Frame, config=Config,
-                   bitmap=Bitmap, board=Board, mode=screensaver}};
+    {Frame, State#state{frame=Frame}};
 do_init([Server, {Rows, Cols, _Mines}=Config]) ->
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl",
                         [{style,
@@ -172,8 +173,7 @@ do_move(#state{solver_state=SState, board=Board}=State) ->
 
 create_and_draw_board({Rows, Cols, Mines}, Bitmap) ->
     Board = board:new(Rows, Cols, Mines),
-    [draw_icon(Bitmap, covered, {Px, Py}) || Px <- lists:seq(0, Rows-1),
-                                             Py <- lists:seq(0, Cols-1)],
+    draw_grid(Bitmap, Rows, Cols),
     Board.
 
 newgame(#state{bitmap=Bitmap, config=Config} = State) ->
@@ -206,24 +206,27 @@ icon_filename(mistaken)   -> "error.gif".
 
 draw_event({game_over, Result}, #state{}) ->
     io:format("Game over: you ~p~n", [Result]);
-draw_event({Event, Seq}, #state{board=#board{dims=Dims},
-                                bitmap=Bitmap}) ->
+draw_event({Event, Seq}, #state{board=#board{dims=Dims}, bitmap=Bitmap}) ->
     draw_icon(Bitmap, Event, board:seq2pos(Seq, Dims));
-draw_event({uncovered, Seq, Type}, #state{board=#board{dims=Dims},
-                                          bitmap=Bitmap}) ->
+draw_event({uncovered, Seq, Type},
+           #state{board=#board{dims=Dims}, bitmap=Bitmap}) ->
     draw_icon(Bitmap, Type, board:seq2pos(Seq, Dims));
 draw_event(Event, _Panel) ->
     io:format("Event: ~p~n", [Event]).
 
+draw_grid(Bitmap, Rows, Cols) ->
+    %% Draw a row and copy that over to other rows for speed.
+    [draw_icon(Bitmap, covered, {0, Py}) || Py <- lists:seq(0, Cols-1)],
+    DC = wxMemoryDC:new(Bitmap),
+    [wxDC:blit(DC, {0, 16*Px}, {16*Cols, 16*(Px+1)}, DC, {0,0}) ||
+        Px <- lists:seq(1, Rows-1)],
+    wxMemoryDC:destroy(DC).
+
 draw_icon(Bitmap, FieldState, {Px, Py}) ->
-    Image = wxImage:new("priv/images/" ++ icon_filename(FieldState)),
-    Bmp = wxBitmap:new(Image),
-    SrcDC = wxMemoryDC:new(Bmp),
+    SrcDC = memoize(fun() -> icon_dc(FieldState) end),
     DestDC = wxMemoryDC:new(Bitmap),
     wxDC:blit(DestDC, {16*Py ,16*Px}, {16, 16}, SrcDC, {0,0}),
-    wxMemoryDC:destroy(SrcDC),
-    wxMemoryDC:destroy(DestDC),
-    wxBitmap:destroy(Bmp).
+    wxMemoryDC:destroy(DestDC).
 
 %% Buffered makes it all appear on the screen at the same time
 redraw(DC, Bitmap) ->
@@ -239,3 +242,18 @@ refresh(#state{mode=screensaver, bitmap=Bitmap}) ->
     wxScreenDC:destroy(DC);
 refresh(#state{mode=interactive, frame=Frame}) ->
     wxPanel:refresh(Frame).
+
+icon_dc(FieldState) ->
+    Image = wxImage:new("priv/images/" ++ icon_filename(FieldState)),
+    Bmp = wxBitmap:new(Image),
+    wxMemoryDC:new(Bmp).
+
+memoize(Fun) ->
+    case get(Fun) of
+        undefined ->
+            Value = Fun(),
+            put(Fun, Value),
+            Value;
+        Value ->
+            Value
+    end.
