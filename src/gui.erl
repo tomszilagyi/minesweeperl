@@ -30,6 +30,7 @@
         }).
 
 screensaver() ->
+    {ok, _EPid} = eprof:start(),
     Server = wx:new(),
     {_, _, _, Pid} = wx_object:start_link(?MODULE, [Server, screensaver], []),
     {ok, Pid}.
@@ -49,6 +50,7 @@ init(Config) ->
     wx:batch(fun() -> do_init(Config) end).
 
 do_init([Server, screensaver]) ->
+    profiling = eprof:start_profiling([self()], {?MODULE, '_', '_'}),
     DC = wxScreenDC:new(),
     {ScreenX, ScreenY} = wxDC:getSize(DC),
     wxScreenDC:destroy(DC),
@@ -135,6 +137,11 @@ handle_event(#wx{event=#wxKey{keyCode=_KC}}, State) ->
 %% Callbacks handled as normal gen_server callbacks
 handle_info(move, State) ->
     do_move(State);
+handle_info(shutdown, State) ->
+    profiling_stopped = eprof:stop_profiling(),
+    ok = eprof:log("eprof.txt"),
+    ok = eprof:analyze(total, [{sort, time}]),
+    {stop, normal, State};
 handle_info(Msg, State) ->
     io:format("Got Info ~p\n", [Msg]),
     {noreply, State}.
