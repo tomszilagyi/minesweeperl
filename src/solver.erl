@@ -96,7 +96,7 @@ random_uncovered(#board{dims=Dims, fields=Fields} = Board) ->
     {Rows, Cols} = Dims,
     NFields = Rows * Cols,
     Seq = random:uniform(NFields) - 1,
-    #field{status=St} = array:get(Seq, Fields),
+    #field{status=St} = barr:get(Seq, Fields),
     if St =:= covered orelse St =:= questioned -> Seq;
        true -> random_uncovered(Board)
     end.
@@ -105,17 +105,17 @@ random_uncovered(#board{dims=Dims, fields=Fields} = Board) ->
 %% all their neighbours fulfilling certain conditions to perform action on.
 solver_prepare(CondFun, #board{fields=Fields}) ->
     Seqs0 =
-        array:foldl(fun(_Seq, #field{status=uncovered,
-                                     neighbours=Nbrs}=F, L) ->
-                            NCovers = board:nbr_covers(F, Fields),
-                            NFlags = board:nbr_flags(F, Fields),
-                            NMines = board:nbr_mines(F, Fields),
-                            case CondFun(NCovers, NFlags, NMines) of
-                                true  -> [solver_filter(Nbrs, Fields) | L];
-                                false -> L
-                            end;
-                       (_Seq, #field{}, L) -> L
-                    end, [], Fields),
+        barr:foldl(fun(_Seq, #field{status=uncovered,
+                                    neighbours=Nbrs}=F, L) ->
+                           NCovers = board:nbr_covers(F, Fields),
+                           NFlags = board:nbr_flags(F, Fields),
+                           NMines = board:nbr_mines(F, Fields),
+                           case CondFun(NCovers, NFlags, NMines) of
+                               true  -> [solver_filter(Nbrs, Fields) | L];
+                               false -> L
+                           end;
+                      (_Seq, #field{}, L) -> L
+                   end, [], Fields),
     lists:usort(lists:flatten(Seqs0)).
 
 %% Perform a certain board action on pre-selected fields.
@@ -128,7 +128,7 @@ solver_action(Action, Seqs, Board) ->
 %% These are fields that are covered but not flagged.
 solver_filter(Seqs, Fields) ->
     Fi = fun(Seq) ->
-                 #field{status=St} = array:get(Seq, Fields),
+                 #field{status=St} = barr:get(Seq, Fields),
                  St =:= covered
          end,
     lists:filter(Fi, Seqs).
