@@ -62,7 +62,7 @@ do_init([Server, screensaver]) ->
     State = #state{config=Config, bitmap=Bitmap, board=Board, mode=screensaver},
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl", []),
     refresh(State),
-    timer:send_interval(?MOVE_INTERVAL, move),
+    schedule_move(State),
     {Frame, State#state{frame=Frame}};
 do_init([Server, {Rows, Cols, _Mines}=Config]) ->
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl",
@@ -110,32 +110,29 @@ handle_event(#wx{event = #wxMouse{x = X, y = Y}},
   when X < 0; Y < 0; Rows < Y div 16; Cols < X div 16 ->
     {noreply, State};
 handle_event(#wx{event = #wxMouse{type = MouseEventType, x = X, y = Y}},
-             #state{board=Board}=State) ->
+             State) ->
     Fun = case MouseEventType of
               left_up   -> step;
               right_up  -> flag;
               middle_up -> question
           end,
-    {Events, NewBoard} = board:Fun({Y div 16, X div 16}, Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    refresh(State),
-    {noreply, State#state{board=NewBoard}};
+    {noreply, board_event(Fun, {Y div 16, X div 16}, State)};
 handle_event(#wx{event=#wxKey{keyCode=$ }}, State) ->
-    do_move(State);
+    {noreply, do_move(State)};
 handle_event(#wx{event=#wxKey{keyCode=$F}}, State) ->
-    solver_event(flag_apparent_mines, State);
+    {noreply, solver_event(flag_apparent_mines, State)};
 handle_event(#wx{event=#wxKey{keyCode=$S}}, State) ->
-    solver_event(uncover_safe_areas, State);
+    {noreply, solver_event(uncover_safe_areas, State)};
 handle_event(#wx{event=#wxKey{keyCode=$R}}, State) ->
-    solver_event(uncover_unsafe, State);
+    {noreply, solver_event(uncover_unsafe, State)};
 handle_event(#wx{event=#wxKey{keyCode=$N}}, State) ->
-    newgame(State);
+    {noreply, newgame(State)};
 handle_event(#wx{event=#wxKey{keyCode=_KC}}, State) ->
     {noreply, State}.
 
 %% Callbacks handled as normal gen_server callbacks
 handle_info(move, State) ->
-    do_move(State);
+    {noreply, do_move(State)};
 handle_info(Msg, State) ->
     io:format("Got Info ~p\n", [Msg]),
     {noreply, State}.
@@ -162,15 +159,6 @@ terminate(_Reason, _State) ->
 %% Local functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-do_move(#state{solver_state=newgame}=State) ->
-    newgame(State);
-do_move(#state{solver_state=SState, board=Board}=State) ->
-    {NewSState, Events, NewBoard} = solver:step(SState, Board),
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
-    refresh(State),
-    %io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{solver_state=NewSState, board=NewBoard}}.
-
 create_and_draw_board({Rows, Cols, Mines}, Bitmap) ->
     Board = board:new(Rows, Cols, Mines),
     draw_grid(Bitmap, Rows, Cols),
@@ -179,14 +167,36 @@ create_and_draw_board({Rows, Cols, Mines}, Bitmap) ->
 newgame(#state{bitmap=Bitmap, config=Config} = State) ->
     Board = create_and_draw_board(Config, Bitmap),
     refresh(State),
-    {noreply, State#state{board=Board, solver_state=flag}}.
+    State#state{board=Board, solver_state=flag}.
+
+schedule_move(#state{mode=screensaver, solver_state=newgame}=State) ->
+    timer:send_after(5 * ?MOVE_INTERVAL, move),
+    State;
+schedule_move(#state{mode=screensaver}=State) ->
+    timer:send_after(?MOVE_INTERVAL, move),
+    State;
+schedule_move(#state{mode=interactive}=State) ->
+    State.
+
+do_move(#state{solver_state=newgame}=State) ->
+    schedule_move(newgame(State));
+do_move(#state{solver_state=SState, board=Board}=State) ->
+    sink_events(solver:step(SState, Board), State).
+
+board_event(Fun, Arg, #state{board=Board}=State) ->
+    sink_events(board:Fun(Arg, Board), State).
 
 solver_event(Fun, #state{board=Board}=State) ->
-    {Events, NewBoard} = solver:Fun(Board),
+    sink_events(solver:Fun(Board), State).
+
+sink_events({[{game_over, _} | _] = Events, Board}, State) ->
+    sink_events({newgame, Events, Board}, State);
+sink_events({Events, Board}, State) ->
+    sink_events({flag, Events, Board}, State);
+sink_events({SolverState, Events, Board}, State) ->
     lists:foreach(fun(E) -> draw_event(E, State) end, Events),
     refresh(State),
-    %io:format("Events: ~p~n", [Events]),
-    {noreply, State#state{board=NewBoard}}.
+    schedule_move(State#state{solver_state=SolverState, board=Board}).
 
 icon_filename({empty, 0}) -> "0.gif";
 icon_filename({empty, 1}) -> "1.gif";
