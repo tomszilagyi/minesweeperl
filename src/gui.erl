@@ -194,51 +194,41 @@ sink_events({[{game_over, _} | _] = Events, Board}, State) ->
 sink_events({Events, Board}, State) ->
     sink_events({flag, Events, Board}, State);
 sink_events({SolverState, Events, Board}, State) ->
-    lists:foreach(fun(E) -> draw_event(E, State) end, Events),
+    draw_events(Events, State),
     refresh(State),
     schedule_move(State#state{solver_state=SolverState, board=Board}).
 
-icon_filename({empty, 0}) -> "0.gif";
-icon_filename({empty, 1}) -> "1.gif";
-icon_filename({empty, 2}) -> "2.gif";
-icon_filename({empty, 3}) -> "3.gif";
-icon_filename({empty, 4}) -> "4.gif";
-icon_filename({empty, 5}) -> "5.gif";
-icon_filename({empty, 6}) -> "6.gif";
-icon_filename({empty, 7}) -> "7.gif";
-icon_filename({empty, 8}) -> "8.gif";
-icon_filename(covered)    -> "empty.gif";
-icon_filename(flagged)    -> "flag.gif";
-icon_filename(questioned) -> "question.gif";
-icon_filename(mine)       -> "mine.gif";
-icon_filename(exploded)   -> "mineexpl.gif";
-icon_filename(mistaken)   -> "error.gif".
+draw_events(Events, #state{board=#board{dims=Dims}, bitmap=Bitmap}) ->
+    DestDC = wxMemoryDC:new(Bitmap),
+    draw_events(Events, Dims, DestDC).
 
-draw_event({game_over, Result}, #state{}) ->
+draw_events([E|Events], Dims, DestDC) ->
+    draw_event(E, Dims, DestDC),
+    draw_events(Events, Dims, DestDC);
+draw_events([], _Dims, DestDC) ->
+    wxMemoryDC:destroy(DestDC).
+
+draw_event({game_over, Result}, _Dims, _DestDC) ->
     io:format("Game over: you ~p~n", [Result]);
-draw_event({Event, Seq}, #state{board=#board{dims=Dims}, bitmap=Bitmap}) ->
-    draw_icon(Bitmap, Event, board:seq2pos(Seq, Dims));
-draw_event({uncovered, Seq, Type},
-           #state{board=#board{dims=Dims}, bitmap=Bitmap}) ->
-    draw_icon(Bitmap, Type, board:seq2pos(Seq, Dims));
-draw_event(Event, _Panel) ->
+draw_event({Event, Seq}, Dims, DestDC) ->
+    draw_icon(DestDC, Event, board:seq2pos(Seq, Dims));
+draw_event({uncovered, Seq, Type}, Dims, DestDC) ->
+    draw_icon(DestDC, Type, board:seq2pos(Seq, Dims));
+draw_event(Event, _Dims, _DestDC) ->
     io:format("Event: ~p~n", [Event]).
 
 draw_grid(Bitmap, Rows, Cols) ->
     %% Draw a row and copy that over to other rows for speed.
-    [draw_icon(Bitmap, covered, {0, Py}) || Py <- lists:seq(0, Cols-1)],
     DC = wxMemoryDC:new(Bitmap),
+    [draw_icon(DC, covered, {0, Py}) || Py <- lists:seq(0, Cols-1)],
     [wxDC:blit(DC, {0, 16*Px}, {16*Cols, 16*(Px+1)}, DC, {0,0}) ||
         Px <- lists:seq(1, Rows-1)],
     wxMemoryDC:destroy(DC).
 
-draw_icon(Bitmap, FieldState, {Px, Py}) ->
+draw_icon(DestDC, FieldState, {Px, Py}) ->
     SrcDC = memoize(fun() -> icon_dc(FieldState) end),
-    DestDC = wxMemoryDC:new(Bitmap),
-    wxDC:blit(DestDC, {16*Py ,16*Px}, {16, 16}, SrcDC, {0,0}),
-    wxMemoryDC:destroy(DestDC).
+    wxDC:blit(DestDC, {16*Py ,16*Px}, {16, 16}, SrcDC, {0,0}).
 
-%% Buffered makes it all appear on the screen at the same time
 redraw(DC, Bitmap) ->
     MemoryDC = wxMemoryDC:new(Bitmap),
     wxDC:blit(DC, {0,0},
@@ -267,3 +257,19 @@ memoize(Fun) ->
         Value ->
             Value
     end.
+
+icon_filename({empty, 0}) -> "0.gif";
+icon_filename({empty, 1}) -> "1.gif";
+icon_filename({empty, 2}) -> "2.gif";
+icon_filename({empty, 3}) -> "3.gif";
+icon_filename({empty, 4}) -> "4.gif";
+icon_filename({empty, 5}) -> "5.gif";
+icon_filename({empty, 6}) -> "6.gif";
+icon_filename({empty, 7}) -> "7.gif";
+icon_filename({empty, 8}) -> "8.gif";
+icon_filename(covered)    -> "empty.gif";
+icon_filename(flagged)    -> "flag.gif";
+icon_filename(questioned) -> "question.gif";
+icon_filename(mine)       -> "mine.gif";
+icon_filename(exploded)   -> "mineexpl.gif";
+icon_filename(mistaken)   -> "error.gif".
