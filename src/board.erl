@@ -35,13 +35,13 @@ new(Rows, Cols, Mines, MineSeqList0) when length(MineSeqList0) < Mines ->
     new(Rows, Cols, Mines, MineSeqList);
 new(Rows, Cols, Mines, MineSeqList) ->
     Dims = {Rows, Cols},
-    Fields0 = array:new([{size, Rows*Cols}, {default, #field{}}]),
-    Fields = array:map(fun(Seq, Field) ->
-                               Pos = seq2pos(Seq, Dims),
-                               HasMine = lists:member(Seq, MineSeqList),
-                               Field#field{has_mine = HasMine,
-                                           neighbours = neighbours(Pos, Dims)}
-                       end, Fields0),
+    Fields0 = barr:new(Rows*Cols, #field{}),
+    Fields = barr:map(fun(Seq, Field) ->
+                              Pos = seq2pos(Seq, Dims),
+                              HasMine = lists:member(Seq, MineSeqList),
+                              Field#field{has_mine = HasMine,
+                                          neighbours = neighbours(Pos, Dims)}
+                      end, Fields0),
     #board{dims = Dims, n_mines = Mines, n_hidden = Rows*Cols, fields = Fields}.
 
 %% step on a field, and thus expose it.
@@ -105,7 +105,7 @@ nbr_mines(F, Fields) -> nbr(mines, F, Fields).
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 board_event(flag, Seq, #board{fields = Fields} = Board, Events) ->
-    F = array:get(Seq, Fields),
+    F = barr:get(Seq, Fields),
     case F#field.status of
         flagged ->
             update_field_status(covered, Seq, Board, Events);
@@ -114,7 +114,7 @@ board_event(flag, Seq, #board{fields = Fields} = Board, Events) ->
         _ -> {Events, Board}
     end;
 board_event(question, Seq, #board{fields = Fields} = Board, Events) ->
-    F = array:get(Seq, Fields),
+    F = barr:get(Seq, Fields),
     case F#field.status of
         questioned ->
             update_field_status(covered, Seq, Board, Events);
@@ -124,7 +124,7 @@ board_event(question, Seq, #board{fields = Fields} = Board, Events) ->
     end;
 %% stepped on a field -- leads to an uncover or an explode on the same field
 board_event(step, Seq, #board{fields = Fields} = Board, Events) ->
-    case array:get(Seq, Fields) of
+    case barr:get(Seq, Fields) of
         #field{has_mine = true, status = covered} ->
             board_event(explode, Seq, Board, Events);
         #field{status = covered} ->
@@ -135,13 +135,13 @@ board_event(step, Seq, #board{fields = Fields} = Board, Events) ->
 %% stepped on an empty field -- handle uncovering it (possibly recursive)
 board_event(uncover, Seq, #board{n_hidden = NH, fields = Fields} = Board,
             Events) ->
-    F = array:get(Seq, Fields),
+    F = barr:get(Seq, Fields),
     case F#field.status of
         St when St == uncovered; St == exploded ->
             {Events, Board}; % break recursion
         _ ->
             NbrMines = nbr(mines, F, Fields),
-            Fields1 = array:set(Seq, F#field{status=uncovered}, Fields),
+            Fields1 = barr:set(Seq, F#field{status=uncovered}, Fields),
             Events1 = [{uncovered, Seq, {empty, NbrMines}} | Events],
             Board1 = Board#board{n_hidden = NH-1, fields = Fields1},
             {Events2, Board2} =
@@ -162,11 +162,11 @@ board_event({game_over, lose}, _Seq, #board{fields = Fields} = Board, Events) ->
     %% generate uncover event for all fields still covered
     %% {uncover, Seq, Type} where Type :: {empty, N} | mine
     UncoverEvents =
-        array:foldl(fun(I, #field{status=St} = F, UEs)
-                          when St == covered; St == flagged; St == questioned ->
-                            [{uncovered, I, uncover_type(F, Fields)} | UEs];
-                       (_I, #field{}, UEs) -> UEs
-                    end, Events, Fields),
+        barr:foldl(fun(I, #field{status=St} = F, UEs)
+                         when St == covered; St == flagged; St == questioned ->
+                           [{uncovered, I, uncover_type(F, Fields)} | UEs];
+                      (_I, #field{}, UEs) -> UEs
+                   end, Events, Fields),
 
     %% TODO update fields' status to uncovered (not really needed
     %% since display will be driven by event stream)
@@ -188,8 +188,8 @@ uncover_type(#field{status = flagged}, _Fields) -> mistaken;
 uncover_type(F, Fields) -> {empty, nbr(mines, F, Fields)}.
 
 update_field_status(NewStatus, Seq, #board{fields = Fields} = Board, Events) ->
-    F = array:get(Seq, Fields),
-    Fields1 = array:set(Seq, F#field{status=NewStatus}, Fields),
+    F = barr:get(Seq, Fields),
+    Fields1 = barr:set(Seq, F#field{status=NewStatus}, Fields),
     Events1 = [{NewStatus, Seq} | Events],
     Board1 = Board#board{fields = Fields1},
     {Events1, Board1}.
@@ -241,7 +241,7 @@ nbr_fun(flags) -> fun(#field{status = flagged}) -> true; (_) -> false end.
 
 nbr(Attr, #field{neighbours = Nbs}, Fields) ->
     AttrFun = nbr_fun(Attr),
-    NbFs = [array:get(Seq, Fields) || Seq <- Nbs],
+    NbFs = [barr:get(Seq, Fields) || Seq <- Nbs],
     lists:foldl(fun(F, Cnt) ->
                         case AttrFun(F) of
                             true -> Cnt+1;
@@ -261,8 +261,8 @@ newgame_test() ->
     %%   8,*9,10,11
     Board = new(3, 4, 5, [2,3,5,7,9]),
     #board{dims = {3, 4}, n_mines = 5, fields = Fields} = Board,
-    F5 = array:get(5, Fields),
-    F6 = array:get(6, Fields),
+    F5 = barr:get(5, Fields),
+    F6 = barr:get(6, Fields),
     ?assertEqual(true, F5#field.has_mine),
     ?assertEqual(false, F6#field.has_mine),
     ?assertEqual(2, nbr(mines, F5, Fields)),
@@ -274,7 +274,7 @@ flag_covered_test() ->
         flag({1,2}, Board),
     ?assertEqual(12, NHidden),
     ?assertMatch([{flagged, 6}], Events),
-    ?assertMatch(#field{status=flagged}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=flagged}, barr:get(6, NewFields)).
 
 flag_questioned_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -283,7 +283,7 @@ flag_questioned_test() ->
         flag({1,2}, Board1),
     ?assertEqual(12, NHidden),
     ?assertMatch([{flagged, 6}], Events),
-    ?assertMatch(#field{status=flagged}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=flagged}, barr:get(6, NewFields)).
 
 flag_flagged_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -292,7 +292,7 @@ flag_flagged_test() ->
         flag({1,2}, Board1),
     ?assertEqual(12, NHidden),
     ?assertMatch([{covered, 6}], Events),
-    ?assertMatch(#field{status=covered}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=covered}, barr:get(6, NewFields)).
 
 flag_uncovered_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -301,7 +301,7 @@ flag_uncovered_test() ->
         flag({1,2}, Board1),
     ?assertEqual(11, NHidden),
     ?assertMatch([], Events),
-    ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=uncovered}, barr:get(6, NewFields)).
 
 question_covered_test() ->
     Board = new(3, 4, 5, [2,3,5,7,9]),
@@ -309,7 +309,7 @@ question_covered_test() ->
         question({1,2}, Board),
     ?assertEqual(12, NHidden),
     ?assertMatch([{questioned, 6}], Events),
-    ?assertMatch(#field{status=questioned}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=questioned}, barr:get(6, NewFields)).
 
 question_flagged_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -318,7 +318,7 @@ question_flagged_test() ->
         question({1,2}, Board1),
     ?assertEqual(12, NHidden),
     ?assertMatch([{questioned, 6}], Events),
-    ?assertMatch(#field{status=questioned}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=questioned}, barr:get(6, NewFields)).
 
 question_questioned_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -327,7 +327,7 @@ question_questioned_test() ->
         question({1,2}, Board1),
     ?assertEqual(12, NHidden),
     ?assertMatch([{covered, 6}], Events),
-    ?assertMatch(#field{status=covered}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=covered}, barr:get(6, NewFields)).
 
 question_uncovered_test() ->
     Board0 = new(3, 4, 5, [2,3,5,7,9]),
@@ -336,14 +336,14 @@ question_uncovered_test() ->
         question({1,2}, Board1),
     ?assertEqual(11, NHidden),
     ?assertMatch([], Events),
-    ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=uncovered}, barr:get(6, NewFields)).
 
 step_on_empty_test() ->
     Board = new(3, 4, 5, [2,3,5,7,9]),
     {Events, #board{n_hidden = NHidden, fields=NewFields}} = step({1,2}, Board),
     ?assertEqual(11, NHidden),
     ?assertMatch([{uncovered, 6, {empty, 5}}], Events),
-    ?assertMatch(#field{status=uncovered}, array:get(6, NewFields)).
+    ?assertMatch(#field{status=uncovered}, barr:get(6, NewFields)).
 
 step_on_mine_test() ->
     Board = new(3, 4, 5, [2,3,5,7,9]),
