@@ -48,22 +48,14 @@ stop(Pid) ->
 init(Config) ->
     wx:batch(fun() -> do_init(Config) end).
 
-do_init([Server, screensaver]) ->
-    DC = wxScreenDC:new(),
-    {ScreenX, ScreenY} = wxDC:getSize(DC),
-    wxScreenDC:destroy(DC),
-    Rows = ScreenY div 16,
-    Cols = ScreenX div 16,
-    Mines = Rows * Cols div 8,
-    Config = {Rows, Cols, Mines},
-    io:format("config: ~p~n", [Config]),
-    Bitmap = wxBitmap:new(16 * Cols, 16 * Rows),
-    Board = create_and_draw_board(Config, Bitmap),
-    State = #state{config=Config, bitmap=Bitmap, board=Board, mode=screensaver},
-    Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl", []),
-    refresh(State),
-    schedule_move(State),
-    {Frame, State#state{frame=Frame}};
+do_init([_Server, screensaver]) ->
+    WinIDStr = os:getenv("XSCREENSAVER_WINDOW"),            % 0x36001F8
+    {ok, [WinID], []} = io_lib:fread("0x~16u", WinIDStr),
+    io:format("WinID: ~s -> ~p~n", [WinIDStr, WinID]),
+    Window = wxWindow:findWindowById(WinID),
+    %% This returns {wx_ref,0,wxWindow,[]} which is void
+    io:format("window: ~p~n", [Window]),
+    crash_and_burn; % This will crash us, which is what we want
 do_init([Server, {Rows, Cols, _Mines}=Config]) ->
     Frame = wxFrame:new(Server, ?wxID_ANY, "MinesweepErl",
                         [{style,
