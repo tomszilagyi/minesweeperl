@@ -1,0 +1,83 @@
+#+TITLE: MinesweepErl
+#+AUTHOR: Tom Szilagyi
+
+[[./minesweeperl.png]]
+
+MinesweepErl is the traditional minesweeper game implemented in
+Erlang, with a solver implementation, also usable as a screensaver.
+
+* Overview
+
+Compile with: =erl -make=
+
+Running is possible in two modes, normal and screensaver.
+
+In normal mode, the user can interact with the board using the mouse
+and the keyboard. Some extra functionality is offered via shortcuts
+that can help with solving the board (they invoke the built-in game
+solver used in screensaver mode). There is no arbitrary limit on the
+board geometry and the number of mines. The implementation is
+efficient enough to allow for extremely large and complicated boards.
+
+In screensaver mode, the board size is automatically computed based on
+the screen size. The number of mines is plausibly chosen to result in
+a somewhat exciting game. The board is painted to the root window and
+repeatedly auto-solved.
+
+* Starting the game
+
+In normal mode, start a game from the Erlang shell by passing the
+desired board configuration. A board configuration is the geometry
+(number of rows and columns) of the board, as well as the number of
+mines randomly hidden on the board. Use =gui:start_link(Rows, Cols,
+Mines)= to launch a new board of your choice.
+
+Launching a screensaver is possible via =gui:screensaver()= from the
+Erlang shell, or by running =screensaver.sh=, which basically does the
+same. The latter is provided as an easy entry point to integrate
+launching the screensaver into your environment.
+
+* User interaction
+
+In normal mode, the game is driven by user actions. These include
+clicking on certain fields with the mouse or pressing certain keys on
+the keyboard.
+
+** Mouse actions
+
+| Button | Action                                               |
+|--------+------------------------------------------------------|
+| left   | Uncover field -- if it is a mine, you lose (and die) |
+| middle | Toggle question mark on covered field                |
+| right  | Toggle flag on covered field                         |
+
+In case a field is marked with a question mark or a flag, this
+protects it from being uncovered by an accidental left click.
+
+In case a field with no mine is uncovered, the number of mines in its
+vicinity will be shown. If there are no mines in its vicinity,
+neighbouring fields will be recursively uncovered until such numbers
+can be seen.
+
+** Keyboard actions
+
+| Key   | Action                                                   |
+|-------+----------------------------------------------------------|
+| =f=   | Flag mines -- fields that are certain to have a mine     |
+| =s=   | Safe uncover -- fields that are certain to be clear      |
+| =r=   | Risky uncover -- if =f= and =s= do not yield a move      |
+| =n=   | Newgame -- start over with the same board configuration  |
+| space | Do whatever is the logical next step to solve the board  |
+
+By repeatedly pressing space, the auto-solver driving screensaver mode
+can be run step by step. This includes starting a new game (with newly
+placed mines) on the same board after a finished game.
+
+* Implementation notes
+
+The game consists of three entities: the board, the solver and the
+gui; all contained in their own Erlang source modules. Only the gui is
+stateful -- the game proper is contained in completely functional data
+structures. The board module (which defines the basic game logic) is
+validated with several EUnit tests. The gui is optimized for speed so
+it can be used as a screensaver on large screens.
